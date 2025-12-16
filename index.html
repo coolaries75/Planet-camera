@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Camera Planet Sphere</title>
+  <style>
+    :root{
+      --tex: none;                 /* updated by JS */
+      --planetSize: 75vw;          /* ~75% of screen width */
+      --sliceCount: 28;
+      --radius: calc(var(--planetSize) / 2.15);
+      --uiFg: rgba(255,255,255,.92);
+      --uiBg: rgba(0,0,0,.45);
+      --uiBd: rgba(255,255,255,.18);
+    }
+
+    html,body{
+      height:100%;
+      margin:0;
+      background:#000;
+      overflow:hidden;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color:var(--uiFg);
+    }
+
+    /* Starfield canvas behind everything */
+    #stars{
+      position:fixed;
+      inset:0;
+      width:100%;
+      height:100%;
+      display:block;
+      z-index:0;
+      background: radial-gradient(circle at 50% 30%, #060b1f 0%, #000 60%, #000 100%);
+    }
+
+    /* Center stage */
+    .stage{
+      position:fixed;
+      inset:0;
+      display:grid;
+      place-items:center;
+      z-index:1;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right)
+               env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    .planetWrap{
+      position:relative;
+      width: var(--planetSize);
+      height: var(--planetSize);
+      transform-style:preserve-3d;
+      perspective: 900px;
+      pointer-events:none;
+    }
+
+    /* The 3D sphere */
+    .sphere{
+      position:absolute;
+      inset:0;
+      transform-style:preserve-3d;
+      border-radius:50%;
+      will-change: transform;
+    }
+
+    /* Rotating only when "travel" is on */
+    .travelOn .sphere{
+      animation: spin 6s linear infinite;
+    }
+
+    @keyframes spin{
+      from{ transform: rotateX(-12deg) rotateY(0deg); }
+      to  { transform: rotateX(-12deg) rotateY(360deg); }
+    }
+
+    /* Slice strips that fake a sphere */
+    .slice{
+      position:absolute;
+      top:0;
+      left:50%;
+      height:100%;
+      width: calc(var(--planetSize) / var(--sliceCount));
+      transform-style:preserve-3d;
+      transform-origin: center center;
+      background-image: var(--tex);
+      background-repeat:no-repeat;
+      background-size: var(--planetSize) var(--planetSize);
+      /* background-position set per-slice in JS */
+      filter: saturate(1.05) contrast(1.02);
+      border-radius: 2px;
+      backface-visibility:hidden;
+    }
+
+    /* Sphere mask + lighting */
+    .mask{
+      position:absolute;
+      inset:0;
+      border-radius:50%;
+      overflow:hidden;
+      transform: translateZ(0.01px);
+      box-shadow:
+        0 18px 60px rgba(0,0,0,.55),
+        inset -25px 0 55px rgba(0,0,0,.55),
+        inset  18px 0 40px rgba(255,255,255,.08);
+      pointer-events:none;
+    }
+
+    .shine{
+      position:absolute;
+      inset:-12%;
+      border-radius:50%;
+      background:
+        radial-gradient(circle at 30% 25%,
+          rgba(255,255,255,.35) 0%,
+          rgba(255,255,255,.10) 20%,
+          rgba(255,255,255,0) 55%),
+        radial-gradient(circle at 65% 70%,
+          rgba(0,0,0,.0) 0%,
+          rgba(0,0,0,.25) 45%,
+          rgba(0,0,0,.65) 80%);
+      mix-blend-mode: screen;
+      opacity:.65;
+      pointer-events:none;
+    }
+
+    .rim{
+      position:absolute;
+      inset:0;
+      border-radius:50%;
+      box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,.10),
+        inset 0 0 25px rgba(255,255,255,.07);
+      pointer-events:none;
+    }
+
+    /* UI */
+    .ui{
+      position:fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index:2;
+      display:flex;
+      gap:10px;
+      justify-content:center;
+      flex-wrap:wrap;
+      pointer-events:auto;
+    }
+
+    button{
+      appearance:none;
+      border:1px solid var(--uiBd);
+      background: var(--uiBg);
+      color: var(--uiFg);
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 14px;
+      letter-spacing:.2px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      touch-action: manipulation;
+      user-select:none;
+    }
+    button:active{ transform: translateY(1px); }
+
+    .hint{
+      position:fixed;
+      top:12px;
+      left:12px;
+      right:12px;
+      z-index:2;
+      background: rgba(0,0,0,.40);
+      border:1px solid rgba(255,255,255,.14);
+      border-radius: 14px;
+      padding:10px 12px;
+      font-size:13px;
+      line-height:1.35;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+    .hint small{ opacity:.9; }
+
+    /* Hidden camera video + texture canvas */
+    #cam, #texCanvas{
+      position:fixed;
+      width:1px; height:1px;
+      left:-9999px; top:-9999px;
+      opacity:0;
+    }
+
+    /* Reduce motion option */
+    @media (prefers-reduced-motion: reduce){
+      .travelOn .sphere{ animation:none; }
+    }
+  </style>
+</head>
+<body class="travelOn">
+  <canvas id="stars"></canvas>
+
+  <div class="stage">
+    <div class="planetWrap" aria-label="Camera planet sphere">
+      <div class="mask">
+        <div class="sphere" id="sphere"></div>
+        <div class="shine"></div>
+        <div class="rim"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hint" id="hint">
+    <div><b>Camera Planet</b> — tap <b>Start Camera</b>. Works best on <b>HTTPS</b> or <b>localhost</b>.</div>
+    <small>If permission is denied, check Android browser site permissions (Camera).</small>
+  </div>
+
+  <div class="ui">
+    <button id="startBtn">Start Camera</button>
+    <button id="travelBtn">Stop Travel</button>
+    <button id="shotBtn">Screenshot</button>
+  </div>
+
+  <video id="cam" playsinline autoplay muted></video>
+  <canvas id="texCanvas"></canvas>
+
+  <script>
+    (() => {
+      const sphere = document.getElementById('sphere');
+      const video = document.getElementById('cam');
+      const texCanvas = document.getElementById('texCanvas');
+      const texCtx = texCanvas.getContext('2d', { alpha: false, desynchronized: true });
+
+      const stars = document.getElementById('stars');
+      const sctx = stars.getContext('2d', { alpha: false, desynchronized: true });
+
+      const startBtn = document.getElementById('startBtn');
+      const travelBtn = document.getElementById('travelBtn');
+      const shotBtn = document.getElementById('shotBtn');
+      const hint = document.getElementById('hint');
+
+      const sliceCount = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sliceCount'), 10) || 28;
+      let slices = [];
+      let stream = null;
+
+      let travelOn = true;
+      let starsRAF = 0;
+
+      // ---------- Build CSS 3D sphere slices ----------
+      function buildSphereSlices() {
+        sphere.innerHTML = '';
+        slices = [];
+        const size = sphere.getBoundingClientRect().width;
+        const radius = size / 2.15;
+
+        for (let i = 0; i < sliceCount; i++) {
+          const d = document.createElement('div');
+          d.className = 'slice';
+
+          const angle = (i / sliceCount) * 360;
+          d.style.transform = `rotateY(${angle}deg) translateZ(${radius}px)`;
+
+          // Background positioning to "wrap" longitude across slices
+          const x = (i / sliceCount) * size;
+          d.style.backgroundPosition = `${-x}px 0px`;
+
+          // Subtle per-slice shading to enhance curvature
+          const t = (i / (sliceCount - 1)) * 2 - 1; // -1..1
+          const shade = Math.abs(t);
+          d.style.opacity = String(0.92 - shade * 0.22);
+
+          sphere.appendChild(d);
+          slices.push(d);
+        }
+      }
+
+      // Keep sphere responsive on resize/orientation changes
+      const ro = new ResizeObserver(() => buildSphereSlices());
+      ro.observe(document.body);
+
+      // ---------- Starfield (travel effect) ----------
+      let starW = 0, starH = 0, dpr = 1;
+      let starPoints = [];
+      function resizeStars() {
+        dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+        starW = Math.floor(window.innerWidth * dpr);
+        starH = Math.floor(window.innerHeight * dpr);
+        stars.width = starW;
+        stars.height = starH;
+
+        // rebuild star points
+        const count = Math.floor((window.innerWidth * window.innerHeight) / 4200);
+        starPoints = new Array(Math.max(120, count)).fill(0).map(() => ({
+          x: (Math.random() - 0.5) * starW,
+          y: (Math.random() - 0.5) * starH,
+          z: Math.random() * starW,
+          p: 0.2 + Math.random() * 0.8
+        }));
+      }
+
+      function drawStars() {
+        // center coordinates
+        const cx = starW * 0.5;
+        const cy = starH * 0.5;
+
+        // clear with slight trail for motion feel
+        sctx.fillStyle = 'rgba(0,0,0,0.35)';
+        sctx.fillRect(0, 0, starW, starH);
+
+        const speed = travelOn ? 18 : 0;
+
+        for (const s of starPoints) {
+          s.z -= speed * s.p;
+          if (s.z < 1) {
+            s.x = (Math.random() - 0.5) * starW;
+            s.y = (Math.random() - 0.5) * starH;
+            s.z = starW;
+            s.p = 0.2 + Math.random() * 0.8;
+          }
+
+          const k = 420 / s.z;
+          const x = cx + s.x * k;
+          const y = cy + s.y * k;
+
+          if (x < 0 || x > starW || y < 0 || y > starH) continue;
+
+          const r = Math.max(0.6, (1.8 - s.z / starW) * 2.2) * dpr;
+          const a = Math.min(1, 0.35 + (1 - s.z / starW) * 0.9);
+
+          sctx.fillStyle = `rgba(255,255,255,${a})`;
+          sctx.beginPath();
+          sctx.arc(x, y, r, 0, Math.PI * 2);
+          sctx.fill();
+        }
+
+        starsRAF = requestAnimationFrame(drawStars);
+      }
+
+      // ---------- Camera texture updating ----------
+      let lastTexUpdate = 0;
+      let texURL = null;
+
+      function setTextureFromVideo() {
+        if (!video.videoWidth || !video.videoHeight) return;
+
+        // Square texture
+        const size = 512; // stable & fast
+        texCanvas.width = size;
+        texCanvas.height = size;
+
+        // center-crop to square
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const side = Math.min(vw, vh);
+        const sx = Math.floor((vw - side) / 2);
+        const sy = Math.floor((vh - side) / 2);
+
+        texCtx.drawImage(video, sx, sy, side, side, 0, 0, size, size);
+
+        // Create a data URL texture and set as CSS var
+        // (Update ~10-15 fps to keep it smooth on mobile)
+        if (texURL) {
+          // allow GC by dropping reference
+          texURL = null;
+        }
+        texURL = texCanvas.toDataURL('image/jpeg', 0.72);
+        document.documentElement.style.setProperty('--tex', `url("${texURL}")`);
+      }
+
+      function textureLoop(ts) {
+        // ~12 fps
+        if (ts - lastTexUpdate > 80) {
+          lastTexUpdate = ts;
+          setTextureFromVideo();
+        }
+        requestAnimationFrame(textureLoop);
+      }
+
+      // ---------- Controls ----------
+      async function startCamera() {
+        try {
+          hint.style.display = 'none';
+          startBtn.disabled = true;
+          startBtn.textContent = 'Starting…';
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: 'environment',
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            },
+            audio: false
+          });
+
+          video.srcObject = stream;
+          await video.play();
+
+          startBtn.textContent = 'Camera On';
+          startBtn.disabled = true;
+
+          requestAnimationFrame(textureLoop);
+        } catch (e) {
+          startBtn.disabled = false;
+          startBtn.textContent = 'Start Camera';
+          hint.style.display = '';
+          hint.innerHTML = `<div><b>Camera permission failed.</b></div><small>${String(e && e.message ? e.message : e)}</small>`;
+        }
+      }
+
+      function toggleTravel() {
+        travelOn = !travelOn;
+        document.body.classList.toggle('travelOn', travelOn);
+        travelBtn.textContent = travelOn ? 'Stop Travel' : 'Resume Travel';
+      }
+
+      function screenshot() {
+        // Composite: stars canvas + planet (approx render) into a PNG
+        const W = Math.floor(window.innerWidth * dpr);
+        const H = Math.floor(window.innerHeight * dpr);
+
+        const out = document.createElement('canvas');
+        out.width = W;
+        out.height = H;
+        const octx = out.getContext('2d', { alpha: false });
+
+        // Background: stars canvas already in device pixels
+        octx.drawImage(stars, 0, 0);
+
+        // Planet position/size
+        const planetSizeCSS = Math.min(window.innerWidth * 0.75, window.innerHeight * 0.75);
+        const planetSize = Math.floor(planetSizeCSS * dpr);
+        const cx = Math.floor(W / 2);
+        const cy = Math.floor(H / 2);
+        const r = Math.floor(planetSize / 2);
+
+        // Draw camera texture clipped as a circle (best-effort screenshot)
+        // If no camera, use a dark gradient.
+        octx.save();
+        octx.beginPath();
+        octx.arc(cx, cy, r, 0, Math.PI * 2);
+        octx.closePath();
+        octx.clip();
+
+        if (video.videoWidth && video.videoHeight) {
+          // Use latest texture canvas (square)
+          octx.drawImage(texCanvas, cx - r, cy - r, planetSize, planetSize);
+        } else {
+          const g = octx.createRadialGradient(cx - r * 0.3, cy - r * 0.4, r * 0.2, cx, cy, r);
+          g.addColorStop(0, '#1b2b55');
+          g.addColorStop(1, '#050713');
+          octx.fillStyle = g;
+          octx.fillRect(cx - r, cy - r, planetSize, planetSize);
+        }
+
+        // Add shading to look spherical
+        const shade = octx.createRadialGradient(cx - r*0.35, cy - r*0.35, r*0.1, cx, cy, r*1.05);
+        shade.addColorStop(0, 'rgba(255,255,255,0.25)');
+        shade.addColorStop(0.25, 'rgba(255,255,255,0.06)');
+        shade.addColorStop(0.65, 'rgba(0,0,0,0.22)');
+        shade.addColorStop(1, 'rgba(0,0,0,0.65)');
+        octx.fillStyle = shade;
+        octx.fillRect(cx - r, cy - r, planetSize, planetSize);
+
+        octx.restore();
+
+        // Rim
+        octx.beginPath();
+        octx.arc(cx, cy, r, 0, Math.PI * 2);
+        octx.strokeStyle = 'rgba(255,255,255,0.18)';
+        octx.lineWidth = Math.max(2, 2 * dpr);
+        octx.stroke();
+
+        // Download
+        const a = document.createElement('a');
+        a.download = `camera-planet-${Date.now()}.png`;
+        a.href = out.toDataURL('image/png');
+        a.click();
+      }
+
+      // ---------- Init ----------
+      function init() {
+        resizeStars();
+        buildSphereSlices();
+        drawStars();
+      }
+
+      window.addEventListener('resize', () => {
+        resizeStars();
+        buildSphereSlices();
+      }, { passive: true });
+
+      startBtn.addEventListener('click', startCamera);
+      travelBtn.addEventListener('click', toggleTravel);
+      shotBtn.addEventListener('click', screenshot);
+
+      // Prevent screen sleep-ish while running (best-effort)
+      let wakeLock = null;
+      async function tryWakeLock(){
+        try{
+          if ('wakeLock' in navigator) {
+            wakeLock = await navigator.wakeLock.request('screen');
+          }
+        } catch {}
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') tryWakeLock();
+      });
+
+      init();
+      tryWakeLock();
+    })();
+  </script>
+</body>
+</html>
